@@ -15,6 +15,7 @@ VOLUME /app/data
 
 # 环境变量
 ENV PYTHONUNBUFFERED=1
+ENV DATA_DIR=/app/data
 
 EXPOSE 5001
 

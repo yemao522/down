@@ -2,7 +2,8 @@ import sqlite3
 import os
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'sora_manager.db')
+DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(__file__))
+DB_PATH = os.path.join(DATA_DIR, 'sora_manager.db')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
