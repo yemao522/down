@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: database persistence and add GitHub Actions CI/CD\n\n- Fix database path to use DATA_DIR env variable for Docker volume persistence\n- Add DATA_DIR=/app/data environment variable in Dockerfile\n- Add GitHub Actions workflow for automatic Docker image build and push to ghcr.io\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix: database persistence and add GitHub Actions CI/CD\n\n- Fix database path to use DATA_DIR env variable for Docker volume persistence\n- Add DATA_DIR=/app/data environment variable in Dockerfile\n- Add GitHub Actions workflow for automatic Docker image build and push to ghcr.io\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\ndocs: update README with deployment guide and credits\n\n- Add detailed deployment instructions \\(Docker, Docker Compose, local\\)\n- Add configuration and usage documentation\n- Credit original author tibbar213/sora-downloader\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

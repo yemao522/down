@@ -1,0 +1,17 @@
+# Sora2Down 代理池配置
+# 每行一个代理，支持以下格式：
+# 
+# http://ip:port
+# http://user:pass@ip:port
+# https://ip:port
+# socks5://ip:port
+# ip:port
+# ip:port:user:pass
+#
+# 以 # 开头的行为注释
+
+# 示例：
+# http://127.0.0.1:7890
+# socks5://127.0.0.1:1080
+# 192.168.1.100:8080
+# proxy.example.com:8080:username:password

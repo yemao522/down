@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import threading
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 from curl_cffi.requests import Session, errors
@@ -20,6 +21,18 @@ account_index = 0
 proxy_index = 0
 index_lock = threading.Lock()
 
+# CF clearance 缓存
+cf_cache = {
+    'cf_clearance': None,
+    'user_agent': None,
+    'expires_at': 0
+}
+
+
+def get_settings():
+    """获取所有设置"""
+    return db.get_all_settings()
+
 
 def get_next_account():
     """轮询获取下一个可用账号"""
@@ -37,22 +50,83 @@ def get_next_account():
 def get_next_proxy():
     """轮询获取下一个可用代理"""
     global proxy_index
-    proxies = db.get_enabled_proxies()
-    if not proxies:
+    settings = get_settings()
+    
+    # 检查是否启用代理
+    if settings.get('proxy_enabled') != '1':
         return None
-    with index_lock:
-        proxy_index = proxy_index % len(proxies)
-        proxy = proxies[proxy_index]
-        proxy_index += 1
-    return proxy
+    
+    # 检查是否启用代理池
+    if settings.get('proxy_pool_enabled') == '1':
+        proxies = db.get_enabled_proxies()
+        if proxies:
+            with index_lock:
+                proxy_index = proxy_index % len(proxies)
+                proxy = proxies[proxy_index]
+                proxy_index += 1
+            return proxy
+    
+    return None
 
 
-def refresh_token(account):
+def solve_cf_challenge(proxy=None):
+    """调用外部 CF Solver 服务获取 cf_clearance"""
+    settings = get_settings()
+    
+    if settings.get('cf_solver_enabled') != '1':
+        return None
+    
+    solver_url = settings.get('cf_solver_url', 'http://localhost:8000/v1/challenge')
+    
+    try:
+        params = {'url': 'https://sora.chatgpt.com'}
+        if proxy:
+            params['proxy'] = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
+        
+        sess = Session(impersonate="chrome110", timeout=120)
+        response = sess.get(solver_url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success'):
+                return {
+                    'cf_clearance': data.get('cf_clearance'),
+                    'user_agent': data.get('user_agent'),
+                    'cookies': data.get('cookies', {})
+                }
+    except Exception as e:
+        print(f"CF Solver error: {e}")
+    
+    return None
+
+
+def get_cf_clearance(proxy=None, force_refresh=False):
+    """获取 CF clearance，带缓存"""
+    global cf_cache
+    
+    # 检查缓存是否有效 (缓存 10 分钟)
+    if not force_refresh and cf_cache['cf_clearance'] and time.time() < cf_cache['expires_at']:
+        return cf_cache
+    
+    # 获取新的 clearance
+    result = solve_cf_challenge(proxy)
+    if result:
+        cf_cache = {
+            'cf_clearance': result['cf_clearance'],
+            'user_agent': result['user_agent'],
+            'expires_at': time.time() + 600  # 10 分钟
+        }
+        return cf_cache
+    
+    return None
+
+
+def refresh_token(account, proxy=None):
     """刷新账号的 access_token"""
-    proxy = get_next_proxy()
     proxies = {}
     if proxy:
-        proxies = {"http": proxy['proxy_url'], "https": proxy['proxy_url']}
+        proxy_url = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
+        proxies = {"http": proxy_url, "https": proxy_url}
     
     sess = Session(impersonate="chrome110", proxies=proxies)
     url = "https://auth.openai.com/oauth/token"
@@ -67,7 +141,6 @@ def refresh_token(account):
     response.raise_for_status()
     data = response.json()
     
-    # 更新数据库中的 token
     db.update_account_usage(
         account['id'], 
         success=True,
@@ -78,25 +151,101 @@ def refresh_token(account):
     return data['access_token'], data['refresh_token']
 
 
-def make_sora_api_call(video_id, account, proxy=None):
+def make_sora_api_call(video_id, account, proxy=None, cf_data=None):
     """执行 Sora API 请求"""
     proxies = {}
     if proxy:
-        proxies = {"http": proxy['proxy_url'], "https": proxy['proxy_url']}
+        proxy_url = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
+        proxies = {"http": proxy_url, "https": proxy_url}
     
     sess = Session(impersonate="chrome110", proxies=proxies)
     api_url = f"https://sora.chatgpt.com/backend/project_y/post/{video_id}"
+    
     headers = {
-        'User-Agent': 'Sora/1.2025.308',
         'Accept': 'application/json',
         'Accept-Encoding': 'gzip',
         'oai-package-name': 'com.openai.sora',
         'authorization': f'Bearer {account["access_token"]}'
     }
     
-    response = sess.get(api_url, headers=headers, timeout=20)
+    # 使用 CF clearance 的 User-Agent
+    if cf_data and cf_data.get('user_agent'):
+        headers['User-Agent'] = cf_data['user_agent']
+    else:
+        headers['User-Agent'] = 'Sora/1.2025.308'
+    
+    cookies = {}
+    if cf_data and cf_data.get('cf_clearance'):
+        cookies['cf_clearance'] = cf_data['cf_clearance']
+    
+    response = sess.get(api_url, headers=headers, cookies=cookies, timeout=20)
     response.raise_for_status()
     return response.json()
+
+
+def process_sora_request(video_id, account, proxy, proxy_id):
+    """处理 Sora 请求，包含重试逻辑"""
+    settings = get_settings()
+    max_retries = int(settings.get('max_retries', '3'))
+    retry_delay = int(settings.get('retry_delay', '2'))
+    retry_on_429 = settings.get('retry_on_429') == '1'
+    retry_on_403 = settings.get('retry_on_403') == '1'
+    
+    cf_data = None
+    last_error = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # 首次尝试或遇到 CF 挑战后获取 clearance
+            if attempt > 0 or settings.get('cf_solver_enabled') == '1':
+                cf_data = get_cf_clearance(proxy, force_refresh=(attempt > 0))
+            
+            response_data = make_sora_api_call(video_id, account, proxy, cf_data)
+            download_link = response_data['post']['attachments'][0]['encodings']['source']['path']
+            return {'success': True, 'download_link': download_link}
+            
+        except errors.RequestsError as e:
+            last_error = str(e)
+            status_code = e.response.status_code if e.response else None
+            
+            # 429 Too Many Requests
+            if status_code == 429 and retry_on_429:
+                print(f"429 encountered, attempt {attempt + 1}/{max_retries + 1}")
+                if attempt < max_retries:
+                    # 切换代理
+                    proxy = get_next_proxy()
+                    proxy_id = proxy['id'] if proxy else None
+                    time.sleep(retry_delay * (attempt + 1))
+                    continue
+            
+            # 403 Forbidden (可能是 CF 挑战)
+            if status_code == 403 and retry_on_403:
+                print(f"403 encountered, attempt {attempt + 1}/{max_retries + 1}")
+                if attempt < max_retries:
+                    # 强制刷新 CF clearance
+                    cf_data = get_cf_clearance(proxy, force_refresh=True)
+                    time.sleep(retry_delay)
+                    continue
+            
+            # 401 尝试刷新 token
+            if status_code == 401:
+                try:
+                    new_access, new_refresh = refresh_token(account, proxy)
+                    account['access_token'] = new_access
+                    continue
+                except Exception as refresh_error:
+                    last_error = f"Token 刷新失败: {refresh_error}"
+            
+            break
+            
+        except (KeyError, IndexError):
+            last_error = "无法从API响应中找到下载链接"
+            break
+        except Exception as e:
+            last_error = str(e)
+            break
+    
+    return {'success': False, 'error': last_error, 'proxy_id': proxy_id}
 
 
 # ========== 页面路由 ==========
@@ -133,12 +282,10 @@ def manage():
 # ========== API 路由 ==========
 @app.route('/get-sora-link', methods=['POST'])
 def get_sora_link():
-    # 获取可用账号
     account = get_next_account()
     if not account:
         return jsonify({"error": "没有可用的 Sora 账号，请在管理后台添加。"}), 500
 
-    # 应用访问权限验证
     if APP_ACCESS_TOKEN:
         if request.json.get('token') != APP_ACCESS_TOKEN:
             return jsonify({"error": "无效或缺失的访问令牌。"}), 401
@@ -155,62 +302,20 @@ def get_sora_link():
     proxy = get_next_proxy()
     proxy_id = proxy['id'] if proxy else None
 
-    try:
-        response_data = make_sora_api_call(video_id, account, proxy)
-        download_link = response_data['post']['attachments'][0]['encodings']['source']['path']
-        
-        # 记录成功
+    result = process_sora_request(video_id, account, proxy, proxy_id)
+    
+    if result['success']:
         db.update_account_usage(account['id'], success=True)
         if proxy_id:
             db.update_proxy_usage(proxy_id, success=True)
         db.add_log(account['id'], proxy_id, video_id, success=True)
-        
-        return jsonify({"download_link": download_link})
-        
-    except errors.RequestsError as e:
-        error_msg = str(e)
-        
-        # 如果是 401/403，尝试刷新 token
-        if e.response is not None and e.response.status_code in [401, 403]:
-            try:
-                new_access, new_refresh = refresh_token(account)
-                account['access_token'] = new_access
-                
-                # 重试
-                response_data = make_sora_api_call(video_id, account, proxy)
-                download_link = response_data['post']['attachments'][0]['encodings']['source']['path']
-                
-                db.update_account_usage(account['id'], success=True)
-                if proxy_id:
-                    db.update_proxy_usage(proxy_id, success=True)
-                db.add_log(account['id'], proxy_id, video_id, success=True)
-                
-                return jsonify({"download_link": download_link})
-                
-            except Exception as refresh_error:
-                error_msg = f"Token 刷新失败: {refresh_error}"
-        
-        # 记录失败
+        return jsonify({"download_link": result['download_link']})
+    else:
         db.update_account_usage(account['id'], success=False)
-        if proxy_id:
-            db.update_proxy_usage(proxy_id, success=False)
-        db.add_log(account['id'], proxy_id, video_id, success=False, error_msg=error_msg)
-        
-        return jsonify({"error": f"请求失败: {error_msg}"}), 500
-        
-    except (KeyError, IndexError) as e:
-        error_msg = "无法从API响应中找到下载链接"
-        db.update_account_usage(account['id'], success=False)
-        db.add_log(account['id'], proxy_id, video_id, success=False, error_msg=error_msg)
-        return jsonify({"error": error_msg}), 500
-        
-    except Exception as e:
-        error_msg = str(e)
-        db.update_account_usage(account['id'], success=False)
-        if proxy_id:
-            db.update_proxy_usage(proxy_id, success=False)
-        db.add_log(account['id'], proxy_id, video_id, success=False, error_msg=error_msg)
-        return jsonify({"error": f"发生错误: {error_msg}"}), 500
+        if result.get('proxy_id'):
+            db.update_proxy_usage(result['proxy_id'], success=False)
+        db.add_log(account['id'], result.get('proxy_id'), video_id, success=False, error_msg=result['error'])
+        return jsonify({"error": f"请求失败: {result['error']}"}), 500
 
 
 # ========== 管理 API ==========
@@ -298,11 +403,46 @@ def api_delete_proxy(proxy_id):
     return jsonify({"success": True})
 
 
+@app.route('/api/proxies/reload', methods=['POST'])
+@admin_required
+def api_reload_proxies():
+    """从 proxy.txt 重新加载代理"""
+    count = db.load_proxies_from_file()
+    return jsonify({"success": True, "loaded": count})
+
+
+# 设置管理
+@app.route('/api/settings', methods=['GET'])
+@admin_required
+def api_get_settings():
+    return jsonify(db.get_all_settings())
+
+
+@app.route('/api/settings', methods=['PUT'])
+@admin_required
+def api_update_settings():
+    data = request.json
+    db.set_settings(data)
+    return jsonify({"success": True})
+
+
 # 日志
 @app.route('/api/logs', methods=['GET'])
 @admin_required
 def api_get_logs():
     return jsonify(db.get_recent_logs(100))
+
+
+# CF Solver 测试
+@app.route('/api/cf-test', methods=['POST'])
+@admin_required
+def api_cf_test():
+    """测试 CF Solver"""
+    proxy = get_next_proxy()
+    result = solve_cf_challenge(proxy)
+    if result:
+        return jsonify({"success": True, "data": result})
+    return jsonify({"success": False, "error": "CF Solver 调用失败"})
 
 
 if __name__ == '__main__':

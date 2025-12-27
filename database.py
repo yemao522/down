@@ -4,6 +4,7 @@ from datetime import datetime
 
 DATA_DIR = os.environ.get('DATA_DIR', os.path.dirname(__file__))
 DB_PATH = os.path.join(DATA_DIR, 'sora_manager.db')
+PROXY_FILE = os.path.join(DATA_DIR, 'proxy.txt')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -57,6 +58,32 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # 系统配置表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # 初始化默认配置
+    default_settings = [
+        ('proxy_enabled', '0'),
+        ('proxy_pool_enabled', '0'),
+        ('cf_solver_enabled', '0'),
+        ('cf_solver_url', 'http://localhost:8000/v1/challenge'),
+        ('retry_on_429', '1'),
+        ('retry_on_403', '1'),
+        ('max_retries', '3'),
+        ('retry_delay', '2'),
+    ]
+    for key, value in default_settings:
+        cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
+    
+    conn.commit()
+    conn.close()
     
     conn.commit()
     conn.close()
@@ -181,6 +208,78 @@ def update_proxy_usage(proxy_id, success=True):
         conn.execute('UPDATE proxies SET last_used_at=?, fail_count=fail_count+1 WHERE id=?', (now, proxy_id))
     conn.commit()
     conn.close()
+
+# ========== 设置管理 ==========
+def get_setting(key, default=None):
+    conn = get_db()
+    row = conn.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    conn.close()
+    return row['value'] if row else default
+
+def get_all_settings():
+    conn = get_db()
+    rows = conn.execute('SELECT key, value FROM settings').fetchall()
+    conn.close()
+    return {row['key']: row['value'] for row in rows}
+
+def set_setting(key, value):
+    conn = get_db()
+    conn.execute('''
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?
+    ''', (key, value, datetime.now().isoformat(), value, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def set_settings(settings_dict):
+    conn = get_db()
+    now = datetime.now().isoformat()
+    for key, value in settings_dict.items():
+        conn.execute('''
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=?, updated_at=?
+        ''', (key, value, now, value, now))
+    conn.commit()
+    conn.close()
+
+# ========== 代理池文件 ==========
+def load_proxies_from_file():
+    """从 proxy.txt 文件加载代理到数据库"""
+    if not os.path.exists(PROXY_FILE):
+        return 0
+    
+    count = 0
+    with open(PROXY_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            # 标准化代理格式
+            proxy_url = normalize_proxy(line)
+            if proxy_url and add_proxy(proxy_url):
+                count += 1
+    return count
+
+def normalize_proxy(proxy_str):
+    """标准化代理格式"""
+    proxy_str = proxy_str.strip()
+    if not proxy_str:
+        return None
+    
+    # 已经是完整格式
+    if proxy_str.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+        return proxy_str
+    
+    # ip:port 格式
+    if ':' in proxy_str:
+        parts = proxy_str.split(':')
+        if len(parts) == 2:
+            return f'http://{proxy_str}'
+        elif len(parts) == 4:
+            # ip:port:user:pass 格式
+            return f'http://{parts[2]}:{parts[3]}@{parts[0]}:{parts[1]}'
+    
+    return None
 
 # ========== 日志 ==========
 def add_log(account_id, proxy_id, video_id, success, error_msg=None):

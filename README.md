@@ -1,138 +1,107 @@
-# Sora Studio Pro
+# Sora2Down
 
-Sora 视频批量下载工具，支持多账号轮询、代理池管理、自动 Token 刷新。
+Sora 视频批量下载工具，支持多账号轮询、代理池管理、CF 挑战自动解决。
 
-> 本项目基于 [tibbar213/sora-downloader](https://github.com/tibbar213/sora-downloader) 二次开发，感谢原作者的贡献！
-
-## 功能特性
+## 功能
 
 - 批量解析 Sora 视频链接
-- 多账号轮询请求，负载均衡
-- 代理池支持，避免 IP 限制
-- 自动 Token 刷新机制
-- 管理后台（账号管理、代理管理、日志查看）
-- 一键打包下载 (ZIP)
-- Docker 一键部署
-- GitHub Actions 自动构建镜像
+- 多账号轮询请求
+- 代理池轮询支持
+- 自动 Token 刷新
+- Cloudflare Turnstile 挑战自动解决
+- 429/403 自动重试
+- 管理后台
+- Docker 部署
 
 ## 快速开始
 
-### 方式一：Docker 部署 (推荐)
-
-#### 使用预构建镜像
+### Docker 部署 (推荐)
 
 ```bash
-docker run -d \
-  --name sora-studio \
-  -p 5001:5001 \
-  -v ./data:/app/data \
-  -e ADMIN_PASSWORD=your_password \
-  -e SECRET_KEY=your_secret_key \
-  ghcr.io/genz27/sora2down:latest
+docker build -t sora2down .
+docker run -d -p 5001:5001 -v ./data:/app/data sora2down
 ```
 
-#### 本地构建
+### 本地运行
 
 ```bash
-git clone https://github.com/genz27/sora2down.git
-cd sora2down
-docker build -t sora-studio .
-docker run -d -p 5001:5001 -v ./data:/app/data sora-studio
-```
-
-### 方式二：Docker Compose
-
-创建 `docker-compose.yml`：
-
-```yaml
-version: '3.8'
-services:
-  sora-studio:
-    image: ghcr.io/genz27/sora2down:latest
-    container_name: sora-studio
-    ports:
-      - "5001:5001"
-    volumes:
-      - ./data:/app/data
-    environment:
-      - ADMIN_PASSWORD=your_password
-      - SECRET_KEY=your_secret_key
-      - APP_ACCESS_TOKEN=  # 可选，设置后需要访问令牌才能使用
-    restart: unless-stopped
-```
-
-启动：
-
-```bash
-docker-compose up -d
-```
-
-### 方式三：本地运行
-
-```bash
-git clone https://github.com/genz27/sora2down.git
-cd sora2down
 pip install -r requirements.txt
-cp .env.example .env  # 编辑配置
 python app.py
 ```
 
 访问 http://localhost:5001
 
-## 配置说明
+## 配置
 
 复制 `.env.example` 为 `.env` 并修改：
 
 ```env
-# 管理后台密码
 ADMIN_PASSWORD=your_password
-
-# Flask Session 密钥
 SECRET_KEY=your_secret_key
-
-# 可选：设置后用户需要输入此令牌才能使用解析功能
-APP_ACCESS_TOKEN=
 ```
 
-## 使用说明
+## 管理后台
 
-### 1. 访问管理后台
+访问 `/login` 进入管理后台，默认密码 `admin123`
 
-访问 `/login` 或 `/manage` 进入管理后台
+### 账号管理
+- 添加 Sora 账号 (Access Token + Refresh Token)
+- 支持多账号轮询
 
-默认密码：`admin123`（请在生产环境中修改）
+### 代理池配置
 
-### 2. 添加 Sora 账号
+**方式一：后台添加**
 
-在管理后台添加 Sora 账号：
-- **Access Token**: Sora API 访问令牌
-- **Refresh Token**: 用于自动刷新 Access Token
-- **Client ID**: 可选，默认使用内置值
+在管理后台 -> 代理池 -> 添加代理
 
-### 3. 配置代理池（可选）
+**方式二：文件配置**
 
-支持 HTTP/HTTPS/SOCKS5 代理：
+在 `data/proxy.txt` 中配置代理列表，每行一个：
+
 ```
-http://127.0.0.1:7890
-http://user:pass@proxy.com:8080
-socks5://127.0.0.1:1080
+# 支持格式
+http://ip:port
+http://user:pass@ip:port
+socks5://ip:port
+ip:port
+ip:port:user:pass
 ```
 
-### 4. 解析视频
+然后在管理后台点击"从文件重载"
 
-在首页粘贴 Sora 视频链接（支持批量），点击"开始解析"
+### 系统设置
 
-## 数据持久化
+- **启用代理**: 开启后请求通过代理发送
+- **启用代理池轮询**: 自动轮询使用代理池中的代理
+- **启用 CF Solver**: 遇到 Cloudflare 挑战时自动获取 cf_clearance
+- **CF Solver 服务地址**: 外部 CF 挑战解决服务的 API 地址
+- **429 自动重试**: 遇到 429 时自动切换代理重试
+- **403 自动重试**: 遇到 403 时刷新 clearance 重试
 
-数据库文件存储在 `/app/data/sora_manager.db`
+## CF Solver 服务
 
-使用 Docker 时请挂载 `-v ./data:/app/data` 以持久化数据
+需要部署外部 CF Turnstile 挑战解决服务，API 格式：
 
-## 致谢
+**GET** `/v1/challenge`
 
-- 原项目：[tibbar213/sora-downloader](https://github.com/tibbar213/sora-downloader)
-- 本项目：[genz27/sora2down](https://github.com/genz27/sora2down)
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| url | 目标 URL | https://sora.chatgpt.com |
+| proxy | 代理地址 | 无 |
+
+**返回:**
+```json
+{
+  "success": true,
+  "cf_clearance": "xxx",
+  "user_agent": "Mozilla/5.0..."
+}
+```
 
 ## License
 
 MIT
+
+## GitHub
+
+https://github.com/genz27/sora2down
