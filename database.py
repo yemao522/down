@@ -84,9 +84,6 @@ def init_db():
     
     conn.commit()
     conn.close()
-    
-    conn.commit()
-    conn.close()
 
 # ========== 账号管理 ==========
 def get_all_accounts():
