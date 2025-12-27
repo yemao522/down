@@ -125,19 +125,36 @@
         }
         .setting-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; }
         
-        /* Switch */
+        /* Switch - 更明显的开关样式 */
         .switch-label { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
         .switch-label input { display: none; }
+        .switch-label span:first-child { font-weight: 500; }
         .switch {
-            width: 44px; height: 24px; background: var(--border-color); border-radius: 12px;
-            position: relative; transition: 0.3s;
+            width: 52px; height: 28px; background: #3a3a45; border-radius: 14px;
+            position: relative; transition: 0.3s; border: 2px solid #555;
+        }
+        .switch::before {
+            content: '关'; position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            font-size: 10px; color: #888; font-weight: 600;
         }
         .switch::after {
-            content: ''; position: absolute; width: 18px; height: 18px; background: #fff;
-            border-radius: 50%; top: 3px; left: 3px; transition: 0.3s;
+            content: ''; position: absolute; width: 20px; height: 20px; background: #888;
+            border-radius: 50%; top: 2px; left: 2px; transition: 0.3s; box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
-        .switch-label input:checked + .switch { background: var(--success); }
-        .switch-label input:checked + .switch::after { left: 23px; }
+        .switch-label input:checked + .switch { 
+            background: var(--success); border-color: var(--success);
+            box-shadow: 0 0 12px rgba(46, 204, 113, 0.4);
+        }
+        .switch-label input:checked + .switch::before { content: '开'; left: 6px; right: auto; color: #fff; }
+        .switch-label input:checked + .switch::after { left: 26px; background: #fff; }
+        
+        /* 状态指示文字 */
+        .switch-status {
+            display: inline-block; margin-left: 12px; font-size: 0.75rem; padding: 2px 8px;
+            border-radius: 4px; font-weight: 600;
+        }
+        .switch-status.on { background: rgba(46,204,113,0.2); color: var(--success); }
+        .switch-status.off { background: rgba(136,136,136,0.2); color: #888; }
 
         .toast {
             position: fixed; bottom: 30px; right: 30px; background: var(--surface-1);
@@ -220,7 +237,10 @@
                 <div class="settings-grid">
                     <div class="setting-item">
                         <label class="switch-label">
-                            <span>启用代理</span>
+                            <div>
+                                <span>启用代理</span>
+                                <span class="switch-status off" id="status_proxy_enabled">已关闭</span>
+                            </div>
                             <input type="checkbox" id="setting_proxy_enabled" onchange="saveSettings()">
                             <span class="switch"></span>
                         </label>
@@ -228,7 +248,10 @@
                     </div>
                     <div class="setting-item">
                         <label class="switch-label">
-                            <span>启用代理池轮询</span>
+                            <div>
+                                <span>启用代理池轮询</span>
+                                <span class="switch-status off" id="status_proxy_pool_enabled">已关闭</span>
+                            </div>
                             <input type="checkbox" id="setting_proxy_pool_enabled" onchange="saveSettings()">
                             <span class="switch"></span>
                         </label>
@@ -245,7 +268,10 @@
                 <div class="settings-grid">
                     <div class="setting-item">
                         <label class="switch-label">
-                            <span>启用 CF Solver</span>
+                            <div>
+                                <span>启用 CF Solver</span>
+                                <span class="switch-status off" id="status_cf_solver_enabled">已关闭</span>
+                            </div>
                             <input type="checkbox" id="setting_cf_solver_enabled" onchange="saveSettings()">
                             <span class="switch"></span>
                         </label>
@@ -266,7 +292,10 @@
                 <div class="settings-grid">
                     <div class="setting-item">
                         <label class="switch-label">
-                            <span>429 自动重试</span>
+                            <div>
+                                <span>429 自动重试</span>
+                                <span class="switch-status off" id="status_retry_on_429">已关闭</span>
+                            </div>
                             <input type="checkbox" id="setting_retry_on_429" onchange="saveSettings()">
                             <span class="switch"></span>
                         </label>
@@ -274,7 +303,10 @@
                     </div>
                     <div class="setting-item">
                         <label class="switch-label">
-                            <span>403 自动重试</span>
+                            <div>
+                                <span>403 自动重试</span>
+                                <span class="switch-status off" id="status_retry_on_403">已关闭</span>
+                            </div>
                             <input type="checkbox" id="setting_retry_on_403" onchange="saveSettings()">
                             <span class="switch"></span>
                         </label>
@@ -527,30 +559,41 @@
         loadSettings();
 
         // ========== 设置管理 ==========
+        function updateSwitchStatus(id, checked) {
+            const status = document.getElementById('status_' + id);
+            if (status) {
+                status.textContent = checked ? '已启用' : '已关闭';
+                status.className = 'switch-status ' + (checked ? 'on' : 'off');
+            }
+        }
+
         function loadSettings() {
             fetch('/api/settings').then(r => r.json()).then(settings => {
-                document.getElementById('setting_proxy_enabled').checked = settings.proxy_enabled === '1';
-                document.getElementById('setting_proxy_pool_enabled').checked = settings.proxy_pool_enabled === '1';
-                document.getElementById('setting_cf_solver_enabled').checked = settings.cf_solver_enabled === '1';
+                const fields = ['proxy_enabled', 'proxy_pool_enabled', 'cf_solver_enabled', 'retry_on_429', 'retry_on_403'];
+                fields.forEach(f => {
+                    const el = document.getElementById('setting_' + f);
+                    const checked = settings[f] === '1';
+                    el.checked = checked;
+                    updateSwitchStatus(f, checked);
+                });
                 document.getElementById('setting_cf_solver_url').value = settings.cf_solver_url || '';
-                document.getElementById('setting_retry_on_429').checked = settings.retry_on_429 === '1';
-                document.getElementById('setting_retry_on_403').checked = settings.retry_on_403 === '1';
                 document.getElementById('setting_max_retries').value = settings.max_retries || '3';
                 document.getElementById('setting_retry_delay').value = settings.retry_delay || '2';
             });
         }
 
         function saveSettings() {
+            const fields = ['proxy_enabled', 'proxy_pool_enabled', 'cf_solver_enabled', 'retry_on_429', 'retry_on_403'];
             const data = {
-                proxy_enabled: document.getElementById('setting_proxy_enabled').checked ? '1' : '0',
-                proxy_pool_enabled: document.getElementById('setting_proxy_pool_enabled').checked ? '1' : '0',
-                cf_solver_enabled: document.getElementById('setting_cf_solver_enabled').checked ? '1' : '0',
                 cf_solver_url: document.getElementById('setting_cf_solver_url').value,
-                retry_on_429: document.getElementById('setting_retry_on_429').checked ? '1' : '0',
-                retry_on_403: document.getElementById('setting_retry_on_403').checked ? '1' : '0',
                 max_retries: document.getElementById('setting_max_retries').value,
                 retry_delay: document.getElementById('setting_retry_delay').value
             };
+            fields.forEach(f => {
+                const checked = document.getElementById('setting_' + f).checked;
+                data[f] = checked ? '1' : '0';
+                updateSwitchStatus(f, checked);
+            });
             fetch('/api/settings', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) })
                 .then(() => showToast('设置已保存', 'success'));
         }
