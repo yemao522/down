@@ -9,6 +9,11 @@ PROXY_FILE = os.path.join(DATA_DIR, 'proxy.txt')
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # SQLite 性能优化
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA cache_size=10000')
+    conn.execute('PRAGMA temp_store=MEMORY')
     return conn
 
 def init_db():

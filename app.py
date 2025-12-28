@@ -31,7 +31,7 @@ class CloudflareState:
     """
     
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # 使用 RLock 避免重入死锁
         self._cf_clearance = None
         self._user_agent = None
         self._cookies = {}
@@ -130,16 +130,40 @@ class CloudflareState:
 # 全局 CF 状态实例
 cf_state = CloudflareState()
 
+# 缓存
+_settings_cache = {'data': None, 'expires': 0}
+_accounts_cache = {'data': None, 'expires': 0}
+
 
 def get_settings():
-    """获取所有设置"""
-    return db.get_all_settings()
+    """获取所有设置（带缓存，30秒TTL）"""
+    now = time.time()
+    if _settings_cache['data'] is not None and now < _settings_cache['expires']:
+        return _settings_cache['data']
+    
+    settings = db.get_all_settings()
+    _settings_cache['data'] = settings
+    _settings_cache['expires'] = now + 30
+    return settings
+
+
+def invalidate_settings_cache():
+    """清除设置缓存"""
+    _settings_cache['data'] = None
+    _settings_cache['expires'] = 0
 
 
 def get_next_account():
-    """轮询获取下一个可用账号"""
+    """轮询获取下一个可用账号（带缓存，10秒TTL）"""
     global account_index
-    accounts = db.get_enabled_accounts()
+    now = time.time()
+    
+    # 使用缓存的账号列表
+    if _accounts_cache['data'] is None or now >= _accounts_cache['expires']:
+        _accounts_cache['data'] = db.get_enabled_accounts()
+        _accounts_cache['expires'] = now + 10
+    
+    accounts = _accounts_cache['data']
     if not accounts:
         return None
     with index_lock:
@@ -147,6 +171,12 @@ def get_next_account():
         account = accounts[account_index]
         account_index += 1
     return account
+
+
+def invalidate_accounts_cache():
+    """清除账号缓存"""
+    _accounts_cache['data'] = None
+    _accounts_cache['expires'] = 0
 
 
 def get_next_proxy():
@@ -471,6 +501,7 @@ def api_add_account():
         refresh_token=data.get('refresh_token'),
         client_id=data.get('client_id')
     )
+    invalidate_accounts_cache()  # 清除缓存
     return jsonify({"id": account_id, "success": True})
 
 
@@ -479,6 +510,7 @@ def api_add_account():
 def api_update_account(account_id):
     data = request.json
     db.update_account(account_id, **data)
+    invalidate_accounts_cache()  # 清除缓存
     return jsonify({"success": True})
 
 
@@ -486,6 +518,7 @@ def api_update_account(account_id):
 @admin_required
 def api_delete_account(account_id):
     db.delete_account(account_id)
+    invalidate_accounts_cache()  # 清除缓存
     return jsonify({"success": True})
 
 
@@ -539,6 +572,7 @@ def api_get_settings():
 def api_update_settings():
     data = request.json
     db.set_settings(data)
+    invalidate_settings_cache()  # 清除缓存
     return jsonify({"success": True})
 
 
