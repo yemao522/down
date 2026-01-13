@@ -77,8 +77,6 @@ def init_db():
     default_settings = [
         ('proxy_enabled', '0'),
         ('proxy_pool_enabled', '0'),
-        ('cf_solver_enabled', '0'),
-        ('cf_solver_url', 'http://localhost:8000/v1/challenge'),
         ('retry_on_429', '1'),
         ('retry_on_403', '1'),
         ('max_retries', '3'),

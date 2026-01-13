@@ -1,14 +1,14 @@
 # Sora2Down
 
-Sora 视频批量下载工具，支持多账号轮询、代理池管理、CF 挑战自动解决。
+Sora 视频批量下载工具，支持多账号轮询、代理池管理，内置管理后台与现代化 UI。
 
 ## 功能
 
 - 批量解析 Sora 视频链接
+- 批量并发处理（前端并发可调）
 - 多账号轮询请求
 - 代理池轮询支持
 - 自动 Token 刷新
-- Cloudflare Turnstile 挑战自动解决
 - 429/403 自动重试
 - 管理后台
 - Docker 部署
@@ -73,30 +73,13 @@ ip:port:user:pass
 
 - **启用代理**: 开启后请求通过代理发送
 - **启用代理池轮询**: 自动轮询使用代理池中的代理
-- **启用 CF Solver**: 遇到 Cloudflare 挑战时自动获取 cf_clearance
-- **CF Solver 服务地址**: 外部 CF 挑战解决服务的 API 地址
 - **429 自动重试**: 遇到 429 时自动切换代理重试
-- **403 自动重试**: 遇到 403 时刷新 clearance 重试
+- **403 自动重试**: 遇到 403 时自动重试
 
-## CF Solver 服务
+## 性能与并发
 
-需要部署外部 CF Turnstile 挑战解决服务，API 格式：
-
-**GET** `/v1/challenge`
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| url | 目标 URL | https://sora.chatgpt.com |
-| proxy | 代理地址 | 无 |
-
-**返回:**
-```json
-{
-  "success": true,
-  "cf_clearance": "xxx",
-  "user_agent": "Mozilla/5.0..."
-}
-```
+- 前端默认并发为 4，可在 `templates/index.html` 中修改 `MAX_CONCURRENCY`。
+- 后端请求会话复用与代理列表缓存已启用，降低频繁连接和读取带来的开销。
 
 ## License
 

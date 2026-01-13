@@ -5,75 +5,109 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>管理登录 - Sora Studio Pro</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
         :root {
-            --bg-body: #0a0a0c;
-            --surface-1: #131316;
-            --border-color: #2d2d35;
-            --primary: #5c6cff;
-            --primary-hover: #4b5be0;
-            --text-main: #ededed;
-            --text-muted: #858595;
-            --error: #e74c3c;
+            --bg-body: #f6f2ec;
+            --surface-1: #ffffff;
+            --surface-2: #f4efe6;
+            --border-color: #e2ddd2;
+            --primary: #0f766e;
+            --primary-hover: #115e59;
+            --text-main: #14110f;
+            --text-muted: #6e675f;
+            --error: #b91c1c;
+            --shadow-soft: 0 12px 30px rgba(15, 23, 42, 0.08);
+            --shadow-strong: 0 22px 60px rgba(15, 23, 42, 0.12);
+            --radius-lg: 22px;
+            --radius-md: 16px;
+            --radius-sm: 10px;
+            --font-display: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif;
+            --font-body: 'IBM Plex Sans', system-ui, sans-serif;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             background: var(--bg-body);
             color: var(--text-main);
-            font-family: 'Inter', system-ui, sans-serif;
+            font-family: var(--font-body);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 24px;
         }
         .backdrop {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: radial-gradient(circle at 50% -20%, #1a1f3c 0%, #0a0a0c 60%);
-            z-index: -1;
+            position: fixed;
+            inset: -10% 0 0 0;
+            background:
+                radial-gradient(900px 400px at 75% -10%, rgba(15, 118, 110, 0.18), transparent 60%),
+                radial-gradient(700px 380px at 10% 0%, rgba(180, 83, 9, 0.16), transparent 55%),
+                linear-gradient(180deg, #f8f4ee 0%, #f3eee6 60%, #efe8dd 100%);
+            z-index: -2;
+            pointer-events: none;
+        }
+        .backdrop::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(20, 17, 15, 0.06) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(20, 17, 15, 0.06) 1px, transparent 1px);
+            background-size: 48px 48px;
+            opacity: 0.35;
         }
         .login-box {
             background: var(--surface-1);
             border: 1px solid var(--border-color);
-            border-radius: 16px;
+            border-radius: var(--radius-lg);
             padding: 40px;
             width: 100%;
-            max-width: 400px;
+            max-width: 420px;
+            box-shadow: var(--shadow-strong);
+            animation: rise 0.6s ease both;
         }
-        h1 { font-size: 1.5rem; margin-bottom: 8px; text-align: center; }
+        h1 {
+            font-size: 1.7rem;
+            margin-bottom: 8px;
+            text-align: center;
+            font-family: var(--font-display);
+            letter-spacing: -0.02em;
+        }
         h1 span { color: var(--primary); }
-        .subtitle { color: var(--text-muted); font-size: 0.85rem; text-align: center; margin-bottom: 30px; }
+        .subtitle { color: var(--text-muted); font-size: 0.8rem; text-align: center; margin-bottom: 30px; letter-spacing: 0.18em; text-transform: uppercase; }
         .form-group { margin-bottom: 20px; }
         label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; }
         input {
             width: 100%;
             padding: 12px 16px;
-            background: var(--bg-body);
+            background: var(--surface-2);
             border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: #fff;
+            border-radius: var(--radius-sm);
+            color: var(--text-main);
             font-size: 14px;
             outline: none;
-            transition: border-color 0.2s;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
-        input:focus { border-color: var(--primary); }
+        input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15); }
         .btn {
             width: 100%;
             padding: 14px;
-            background: var(--primary);
+            background: var(--text-main);
             color: #fff;
             border: none;
-            border-radius: 8px;
+            border-radius: 999px;
             font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
             transition: 0.2s;
+            box-shadow: var(--shadow-soft);
         }
-        .btn:hover { background: var(--primary-hover); }
+        .btn:hover { background: var(--primary); }
         .error-msg {
-            background: rgba(231, 76, 60, 0.1);
-            border: 1px solid var(--error);
+            background: rgba(185, 28, 28, 0.08);
+            border: 1px solid rgba(185, 28, 28, 0.2);
             color: var(--error);
             padding: 12px;
-            border-radius: 8px;
+            border-radius: var(--radius-md);
             margin-bottom: 20px;
             font-size: 0.85rem;
             text-align: center;
@@ -87,6 +121,10 @@
             font-size: 0.85rem;
         }
         .back-link:hover { color: var(--primary); }
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>

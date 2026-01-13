@@ -22,117 +22,13 @@ proxy_index = 0
 index_lock = threading.Lock()
 
 
-class CloudflareState:
-    """
-    全局 Cloudflare 状态管理器
-    - cf_clearance cookies 和 user_agent 全局共享
-    - 所有请求自动使用相同凭据，直到遇到新的 429/403
-    - 线程安全
-    """
-    
-    def __init__(self):
-        self._lock = threading.RLock()  # 使用 RLock 避免重入死锁
-        self._cf_clearance = None
-        self._user_agent = None
-        self._cookies = {}
-        self._expires_at = 0
-        self._is_valid = False
-    
-    @property
-    def cf_clearance(self):
-        with self._lock:
-            return self._cf_clearance
-    
-    @property
-    def user_agent(self):
-        with self._lock:
-            return self._user_agent
-    
-    @property
-    def cookies(self):
-        with self._lock:
-            return self._cookies.copy()
-    
-    @property
-    def is_valid(self):
-        """检查当前凭据是否有效"""
-        with self._lock:
-            if not self._is_valid or not self._cf_clearance:
-                return False
-            if time.time() > self._expires_at:
-                return False
-            return True
-    
-    def update(self, cf_clearance, user_agent, cookies=None, ttl=600):
-        """
-        更新 CF 凭据
-        :param cf_clearance: cf_clearance cookie 值
-        :param user_agent: 对应的 User-Agent
-        :param cookies: 其他 cookies (可选)
-        :param ttl: 有效期秒数，默认 10 分钟
-        """
-        with self._lock:
-            self._cf_clearance = cf_clearance
-            self._user_agent = user_agent
-            self._cookies = cookies or {}
-            if cf_clearance:
-                self._cookies['cf_clearance'] = cf_clearance
-            self._expires_at = time.time() + ttl
-            self._is_valid = True
-            print(f"[CloudflareState] Updated: clearance={cf_clearance[:20] if cf_clearance else None}..., ua={user_agent[:30] if user_agent else None}...")
-    
-    def invalidate(self):
-        """标记当前凭据无效（遇到 429/403 时调用）"""
-        with self._lock:
-            self._is_valid = False
-            print("[CloudflareState] Invalidated due to 429/403")
-    
-    def clear(self):
-        """清除所有凭据"""
-        with self._lock:
-            self._cf_clearance = None
-            self._user_agent = None
-            self._cookies = {}
-            self._expires_at = 0
-            self._is_valid = False
-            print("[CloudflareState] Cleared")
-    
-    def get_request_data(self):
-        """
-        获取请求所需的数据
-        :return: dict with 'user_agent' and 'cookies', or None if invalid
-        """
-        with self._lock:
-            if not self._is_valid or not self._cf_clearance:
-                return None
-            if time.time() > self._expires_at:
-                self._is_valid = False
-                return None
-            return {
-                'user_agent': self._user_agent,
-                'cookies': self._cookies.copy(),
-                'cf_clearance': self._cf_clearance
-            }
-    
-    def get_status(self):
-        """获取当前状态信息"""
-        with self._lock:
-            remaining = max(0, int(self._expires_at - time.time())) if self._is_valid else 0
-            return {
-                'is_valid': self._is_valid and self._cf_clearance is not None,
-                'has_clearance': self._cf_clearance is not None,
-                'user_agent': self._user_agent[:50] + '...' if self._user_agent and len(self._user_agent) > 50 else self._user_agent,
-                'expires_in_seconds': remaining,
-                'cookies_count': len(self._cookies)
-            }
-
-
-# 全局 CF 状态实例
-cf_state = CloudflareState()
-
 # 缓存
 _settings_cache = {'data': None, 'expires': 0}
 _accounts_cache = {'data': None, 'expires': 0}
+_proxies_cache = {'data': None, 'expires': 0}
+
+_thread_local = threading.local()
+_SESSION_CACHE_MAX = 20
 
 
 def get_settings():
@@ -179,6 +75,56 @@ def invalidate_accounts_cache():
     _accounts_cache['expires'] = 0
 
 
+def invalidate_proxies_cache():
+    """清除代理缓存"""
+    _proxies_cache['data'] = None
+    _proxies_cache['expires'] = 0
+
+
+def _get_cached_proxies():
+    now = time.time()
+    if _proxies_cache['data'] is None or now >= _proxies_cache['expires']:
+        _proxies_cache['data'] = db.get_enabled_proxies()
+        _proxies_cache['expires'] = now + 10
+    return _proxies_cache['data']
+
+
+def _trim_sessions(sessions):
+    overflow = len(sessions) - _SESSION_CACHE_MAX
+    if overflow <= 0:
+        return
+    oldest = sorted(sessions.items(), key=lambda item: item[1]['last_used'])[:overflow]
+    for key, info in oldest:
+        try:
+            info['session'].close()
+        except Exception:
+            pass
+        sessions.pop(key, None)
+
+
+def get_http_session(proxy=None):
+    proxy_url = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
+    key = proxy_url or 'direct'
+    sessions = getattr(_thread_local, 'sessions', None)
+    if sessions is None:
+        sessions = {}
+        _thread_local.sessions = sessions
+
+    entry = sessions.get(key)
+    if entry:
+        entry['last_used'] = time.time()
+        return entry['session']
+
+    proxies = {}
+    if proxy_url:
+        proxies = {"http": proxy_url, "https": proxy_url}
+
+    sess = Session(impersonate="chrome110", proxies=proxies)
+    sessions[key] = {'session': sess, 'last_used': time.time()}
+    _trim_sessions(sessions)
+    return sess
+
+
 def get_next_proxy():
     """轮询获取下一个可用代理"""
     global proxy_index
@@ -190,7 +136,7 @@ def get_next_proxy():
     
     # 检查是否启用代理池
     if settings.get('proxy_pool_enabled') == '1':
-        proxies = db.get_enabled_proxies()
+        proxies = _get_cached_proxies()
         if proxies:
             with index_lock:
                 proxy_index = proxy_index % len(proxies)
@@ -201,68 +147,9 @@ def get_next_proxy():
     return None
 
 
-def solve_cf_challenge(proxy=None):
-    """调用外部 CF Solver 服务获取 cf_clearance"""
-    settings = get_settings()
-    
-    if settings.get('cf_solver_enabled') != '1':
-        return None
-    
-    solver_url = settings.get('cf_solver_url', 'http://localhost:8000/v1/challenge')
-    
-    try:
-        params = {'url': 'https://sora.chatgpt.com', 'skip_cache': 'true'}
-        if proxy:
-            params['proxy'] = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
-        
-        sess = Session(impersonate="chrome110", timeout=120)
-        response = sess.get(solver_url, params=params)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('success'):
-                result = {
-                    'cf_clearance': data.get('cf_clearance'),
-                    'user_agent': data.get('user_agent'),
-                    'cookies': data.get('cookies', {})
-                }
-                # 更新全局状态
-                cf_state.update(
-                    cf_clearance=result['cf_clearance'],
-                    user_agent=result['user_agent'],
-                    cookies=result['cookies']
-                )
-                return result
-    except Exception as e:
-        print(f"CF Solver error: {e}")
-    
-    return None
-
-
-def get_cf_clearance(proxy=None, force_refresh=False):
-    """获取 CF clearance，优先使用全局缓存"""
-    global cf_state
-    
-    # 如果不强制刷新且全局状态有效，直接返回
-    if not force_refresh and cf_state.is_valid:
-        return cf_state.get_request_data()
-    
-    # 获取新的 clearance
-    result = solve_cf_challenge(proxy)
-    if result:
-        return cf_state.get_request_data()
-    
-    return None
-
-
 def refresh_token(account, proxy=None):
     """刷新账号的 access_token"""
-    proxies = {}
-    if proxy:
-        proxy_url = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
-        proxies = {"http": proxy_url, "https": proxy_url}
-    
-    sess = Session(impersonate="chrome110", proxies=proxies)
+    sess = get_http_session(proxy)
     url = "https://auth.openai.com/oauth/token"
     payload = {
         "client_id": account.get('client_id', 'app_OHnYmJt5u1XEdhDUx0ig1ziv'),
@@ -286,37 +173,19 @@ def refresh_token(account, proxy=None):
 
 
 def make_sora_api_call(video_id, account, proxy=None):
-    """执行 Sora API 请求，自动使用全局 CF 凭据"""
-    proxies = {}
-    if proxy:
-        proxy_url = proxy.get('proxy_url') if isinstance(proxy, dict) else proxy
-        proxies = {"http": proxy_url, "https": proxy_url}
-    
-    sess = Session(impersonate="chrome110", proxies=proxies)
+    """执行 Sora API 请求"""
+    sess = get_http_session(proxy)
     api_url = f"https://sora.chatgpt.com/backend/project_y/post/{video_id}"
-    
-    # 获取全局 CF 凭据
-    cf_data = cf_state.get_request_data()
     
     headers = {
         'Accept': 'application/json',
         'Accept-Encoding': 'gzip',
         'oai-package-name': 'com.openai.sora',
-        'authorization': f'Bearer {account["access_token"]}'
+        'authorization': f'Bearer {account["access_token"]}',
+        'User-Agent': 'Sora/1.2025.308'
     }
     
-    # 使用全局 CF User-Agent，否则使用默认
-    if cf_data and cf_data.get('user_agent'):
-        headers['User-Agent'] = cf_data['user_agent']
-    else:
-        headers['User-Agent'] = 'Sora/1.2025.308'
-    
-    # 使用全局 CF cookies
-    cookies = {}
-    if cf_data and cf_data.get('cookies'):
-        cookies = cf_data['cookies']
-    
-    response = sess.get(api_url, headers=headers, cookies=cookies, timeout=20)
+    response = sess.get(api_url, headers=headers, timeout=20)
     response.raise_for_status()
     return response.json()
 
@@ -331,10 +200,6 @@ def process_sora_request(video_id, account, proxy, proxy_id):
     
     last_error = None
     
-    # 首次请求前，如果启用了 CF Solver 且没有有效凭据，先获取
-    if settings.get('cf_solver_enabled') == '1' and not cf_state.is_valid:
-        get_cf_clearance(proxy, force_refresh=True)
-    
     for attempt in range(max_retries + 1):
         try:
             response_data = make_sora_api_call(video_id, account, proxy)
@@ -348,28 +213,17 @@ def process_sora_request(video_id, account, proxy, proxy_id):
             # 429 Too Many Requests
             if status_code == 429 and retry_on_429:
                 print(f"[429] attempt {attempt + 1}/{max_retries + 1}")
-                # 标记 CF 凭据无效
-                cf_state.invalidate()
-                
                 if attempt < max_retries:
-                    # 切换代理并刷新 CF 凭据
+                    # 切换代理并重试
                     proxy = get_next_proxy()
                     proxy_id = proxy['id'] if proxy else None
-                    if settings.get('cf_solver_enabled') == '1':
-                        get_cf_clearance(proxy, force_refresh=True)
                     time.sleep(retry_delay * (attempt + 1))
                     continue
             
-            # 403 Forbidden (可能是 CF 挑战)
+            # 403 Forbidden
             if status_code == 403 and retry_on_403:
                 print(f"[403] attempt {attempt + 1}/{max_retries + 1}")
-                # 标记 CF 凭据无效
-                cf_state.invalidate()
-                
                 if attempt < max_retries:
-                    # 强制刷新 CF clearance
-                    if settings.get('cf_solver_enabled') == '1':
-                        get_cf_clearance(proxy, force_refresh=True)
                     time.sleep(retry_delay)
                     continue
             
@@ -534,6 +388,8 @@ def api_get_proxies():
 def api_add_proxy():
     data = request.json
     success = db.add_proxy(data.get('proxy_url'))
+    if success:
+        invalidate_proxies_cache()
     return jsonify({"success": success})
 
 
@@ -542,6 +398,7 @@ def api_add_proxy():
 def api_update_proxy(proxy_id):
     data = request.json
     db.update_proxy(proxy_id, **data)
+    invalidate_proxies_cache()
     return jsonify({"success": True})
 
 
@@ -549,6 +406,7 @@ def api_update_proxy(proxy_id):
 @admin_required
 def api_delete_proxy(proxy_id):
     db.delete_proxy(proxy_id)
+    invalidate_proxies_cache()
     return jsonify({"success": True})
 
 
@@ -557,6 +415,7 @@ def api_delete_proxy(proxy_id):
 def api_reload_proxies():
     """从 proxy.txt 重新加载代理"""
     count = db.load_proxies_from_file()
+    invalidate_proxies_cache()
     return jsonify({"success": True, "loaded": count})
 
 
@@ -588,35 +447,6 @@ def api_get_logs():
 @admin_required
 def api_get_stats():
     return jsonify(db.get_stats())
-
-
-# CF Solver 测试
-@app.route('/api/cf-test', methods=['POST'])
-@admin_required
-def api_cf_test():
-    """测试 CF Solver"""
-    proxy = get_next_proxy()
-    result = solve_cf_challenge(proxy)
-    if result:
-        return jsonify({"success": True, "data": result})
-    return jsonify({"success": False, "error": "CF Solver 调用失败"})
-
-
-# CF 状态查询
-@app.route('/api/cf-status', methods=['GET'])
-@admin_required
-def api_cf_status():
-    """获取当前 CF 状态"""
-    return jsonify(cf_state.get_status())
-
-
-# CF 状态清除
-@app.route('/api/cf-clear', methods=['POST'])
-@admin_required
-def api_cf_clear():
-    """清除 CF 凭据"""
-    cf_state.clear()
-    return jsonify({"success": True})
 
 
 if __name__ == '__main__':
